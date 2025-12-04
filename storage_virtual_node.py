@@ -149,8 +149,14 @@ class StorageVirtualNode:
         chunk.status = TransferStatus.COMPLETED
         chunk.stored_node = self.node_id
         
-        # Update metrics
-        self.network_utilization += available_bandwidth * 0.8  # Simulate some fluctuation
+            # === BEST & SIMPLEST FIX (Recommended) ===
+    time.sleep(transfer_time)  # Simulate real transfer time
+
+    # Just record peak observed bandwidth (for stats)
+    used_during_transfer = chunk_size_bits / transfer_time
+    self.network_utilization = max(self.network_utilization, used_during_transfer)
+
+    # No permanent accumulation → speed stays stable!  # Simulate some fluctuation
         self.total_data_transferred += chunk.size
         
         # Check if all chunks are completed

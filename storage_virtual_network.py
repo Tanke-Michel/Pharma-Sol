@@ -1,47 +1,91 @@
-from storage_virtual_network import StorageVirtualNetwork
-from storage_virtual_node import StorageVirtualNode
+# storage_virtual_network.py
+from typing import Dict, List, Optional, Tuple
+import hashlib
+import time
+from storage_virtual_node import StorageVirtualNode, FileTransfer, TransferStatus
+from collections import defaultdict
 
-# Create network
-network = StorageVirtualNetwork()
 
-# Create nodes
-node1 = StorageVirtualNode("node1", cpu_capacity=4, memory_capacity=16, storage_capacity=500, bandwidth=1000)
-node2 = StorageVirtualNode("node2", cpu_capacity=8, memory_capacity=32, storage_capacity=1000, bandwidth=2000)
+class StorageVirtualNetwork:
+    def __init__(self):
+        self.nodes: Dict[str, StorageVirtualNode] = {}
+        self.transfer_operations: Dict[str, Dict[str, FileTransfer]] = defaultdict(dict)
 
-# Add nodes to network
-network.add_node(node1)
-network.add_node(node2)
+    def add_node(self, node: StorageVirtualNode):
+        """Add a node to the network"""
+        self.nodes[node.node_id] = node
 
-# Connect nodes with 1Gbps link
-network.connect_nodes("node1", "node2", bandwidth=1000)
+    def connect_nodes(self, node1_id: str, node2_id: str, bandwidth: int):
+        """Connect two nodes with specified bandwidth (in bits per second)"""
+        if node1_id in self.nodes and node2_id in self.nodes:
+            self.nodes[node1_id].add_connection(node2_id, bandwidth)
+            self.nodes[node2_id].add_connection(node1_id, bandwidth)
+            return True
+        return False
 
-# Initiate file transfer (100MB file from node1 to node2)
-transfer = network.initiate_file_transfer(
-    source_node_id="node1",
-    target_node_id="node2",
-    file_name="large_dataset.zip",
-    file_size=100 * 1024 * 1024  # 100MB
-)
+    def initiate_file_transfer(
+        self,
+        source_node_id: str,
+        target_node_id: str,
+        file_name: str,
+        file_size: int
+    ) -> Optional[FileTransfer]:
+        if source_node_id not in self.nodes or target_node_id not in self.nodes:
+            return None
 
-if transfer:
-    print(f"Transfer initiated: {transfer.file_id}")
-    
-    # Process transfer in chunks
-    while True:
-        chunks_done, completed = network.process_file_transfer(
-            source_node_id="node1",
-            target_node_id="node2",
-            file_id=transfer.file_id,
-            chunks_per_step=3  # Process 3 chunks at a time
-        )
-        
-        print(f"Transferred {chunks_done} chunks, completed: {completed}")
-        
-        if completed:
-            print("Transfer completed successfully!")
-            break
-            
-        # Get network stats
-        stats = network.get_network_stats()
-        print(f"Network utilization: {stats['bandwidth_utilization']:.2f}%")
-        print(f"Storage utilization on node2: {node2.get_storage_utilization()['utilization_percent']:.2f}%")
+        file_id = hashlib.md5(f"{file_name}-{time.time()}".encode()).hexdigest()
+        target_node = self.nodes[target_node_id]
+        transfer = target_node.initiate_file_transfer(file_id, file_name, file_size, source_node_id)
+
+        if transfer:
+            self.transfer_operations[source_node_id][file_id] = transfer
+            return transfer
+        return None
+
+    def process_file_transfer(
+        self,
+        source_node_id: str,
+        target_node_id: str,
+        file_id: str,
+        chunks_per_step: int = 1
+    ) -> Tuple[int, bool]:
+        if (source_node_id not in self.nodes or
+            target_node_id not in self.nodes or
+            file_id not in self.transfer_operations[source_node_id]):
+            return (0, False)
+
+        target_node = self.nodes[target_node_id]
+        transfer = self.transfer_operations[source_node_id][file_id]
+
+        chunks_transferred = 0
+        for chunk in transfer.chunks:
+            if chunk.status != TransferStatus.COMPLETED and chunks_transferred < chunks_per_step:
+                if target_node.process_chunk_transfer(file_id, chunk.chunk_id, source_node_id):
+                    chunks_transferred += 1
+                else:
+                    return (chunks_transferred, False)
+
+        if transfer.status == TransferStatus.COMPLETED:
+            del self.transfer_operations[source_node_id][file_id]
+            return (chunks_transferred, True)
+
+        return (chunks_transferred, False)
+
+    def get_network_stats(self) -> Dict[str, float]:
+        total_bandwidth = sum(
+            conn for node in self.nodes.values() for conn in node.connections.values()
+        ) // 2  # each link counted twice
+        used_bandwidth = sum(node.network_utilization for node in self.nodes.values())
+        total_storage = sum(node.total_storage for node in self.nodes.values())
+        used_storage = sum(node.used_storage for node in self.nodes.values())
+
+        return {
+            "total_nodes": len(self.nodes),
+            "total_bandwidth_bps": total_bandwidth * 2,  # just for display
+            "used_bandwidth_bps": used_bandwidth,
+            "bandwidth_utilization": (used_bandwidth / (total_bandwidth * 2)) * 100 if total_bandwidth else 0,
+            "total_storage_bytes": total_storage,
+            "used_storage_bytes": used_storage,
+            "storage_utilization": (used_storage / total_storage) * 100 if total_storage else 0,
+            "active_transfers": sum(len(t) for t in self.transfer_operations.values())
+        }
